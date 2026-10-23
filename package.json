@@ -1,6 +1,6 @@
 {
   "name": "@forge-ops/tracker-react-native",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "ForgeOps error tracking client for React Native apps: captures uncaught JS exceptions (ErrorUtils) and unhandled promise rejections, plus explicit capture anywhere else, and delivers them to ForgeOps over HTTP.",
   "type": "module",
   "main": "dist/index.js",
