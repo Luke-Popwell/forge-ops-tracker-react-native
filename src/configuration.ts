@@ -124,10 +124,10 @@ export class Configuration {
   /**
    * Strict privacy, for apps that can't let personal or health data leave the device: every error
    * event goes out without its message (a message_fingerprint instead, so errors still group),
-   * breadcrumbs, SQL statement, or the user's email/username, and with only the context/tag keys
-   * named in privacyAllowedFields. Breadcrumbs aren't recorded at all, network spans are named by
-   * method and host only, and span data keeps only db.statement and db.system. See
-   * strictPrivacy.ts. Off by default. ForgeOps applies the same rules again on arrival when the
+   * breadcrumbs, SQL statement, or the user's email/username, with the user's id only as a keyed
+   * hash (privacyUserKey), and with only the context/tag keys named in privacyAllowedFields.
+   * Breadcrumbs aren't recorded at all, network spans are named by method and host only, and span
+   * data keeps only db.statement and db.system. See strictPrivacy.ts. Off by default. ForgeOps applies the same rules again on arrival when the
    * project's own Strict privacy setting is on.
    */
   strictPrivacy = false;
@@ -137,6 +137,14 @@ export class Configuration {
    * under these exact top-level keys), e.g. ["error_code", "feature"]. None by default.
    */
   privacyAllowedFields: string[] = [];
+
+  /**
+   * Strict privacy sends the user's id only as a keyed hash (HMAC-SHA256) with this secret; unset
+   * (or empty), no user is sent at all. Keep it the same across releases, or the same customer
+   * counts as two. Shipped inside the app, the key can be read out of it, so it protects the id
+   * less than on a server. None by default.
+   */
+  privacyUserKey: string | null = null;
 
   logger: ((message: string) => void) | null = null;
 

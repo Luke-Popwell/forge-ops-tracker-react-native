@@ -158,7 +158,7 @@ export class EventBuilder {
     if (allowedTags) {
       payload.tags = allowedTags;
     }
-    const strictUser = strictPrivacy.userId(user);
+    const strictUser = strictPrivacy.userId(user, this.configuration.privacyUserKey);
     if (strictUser) {
       payload.user = strictUser;
     }

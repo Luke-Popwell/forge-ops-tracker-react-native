@@ -454,6 +454,7 @@ forgeOpsTracker.init({
   dsn: "...",
   strictPrivacy: true,
   privacyAllowedFields: ["error_code", "feature"],
+  privacyUserKey: "your-own-secret", // default unset: no user sent
 });
 ```
 
@@ -463,7 +464,13 @@ forgeOpsTracker.init({
 - No breadcrumbs (none are recorded, automatic or `addBreadcrumb()`) and no SQL statement (even with
   `captureSqlStatement` on; the table and procedure names are still sent). There's no source
   context or session replay on React Native to begin with.
-- The user is sent as its `id` only, never `email` or `username`.
+- The user's `email` and `username` are never sent, and neither is the raw `id`. With
+  `privacyUserKey` set, the id is sent as a keyed hash (HMAC-SHA256 with your key, which ForgeOps
+  never sees), so ForgeOps can still count affected customers but can't read the id. Without a
+  key, no user is sent at all. Keep the key the same across releases, or one customer counts as two.
+  In code that runs on users' devices, like this app, the key can be read out of the app, so it
+  protects the id less than on a server. To send no user at all from the app, leave the key unset
+  (the default).
 - Context and tags keep only the top-level keys listed in `privacyAllowedFields`, and only when the
   value is a string, number or boolean. With none listed, neither is sent.
 - Traces: a network span is named by its method and host (`GET api.example.com`), a span named
@@ -476,7 +483,7 @@ forgeOpsTracker.init({
   (`/patients/jane-doe/12` is `/patients/:path`), and a first segment holding a digit becomes `:id`.
 
 The exception class, backtrace frames (file, line, function), release, environment and trace id are
-unchanged, as are performance aggregates, metrics and recorded changes. Both options are set in
+unchanged, as are performance aggregates, metrics and recorded changes. All three options are set in
 `init()` only: a React Native bundle has no environment to read them from.
 
 ForgeOps applies the same rules again on arrival when the project's own Strict privacy setting is

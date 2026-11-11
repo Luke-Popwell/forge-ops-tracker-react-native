@@ -5,7 +5,7 @@ import { Configuration } from "../src/configuration.js";
 import { EventBuilder, EventPayload, StrictEventPayload } from "../src/eventBuilder.js";
 import * as forgeOpsTracker from "../src/index.js";
 import { PerformanceFlusher } from "../src/performanceFlusher.js";
-import { messageFingerprint, normalizeMessage, strictPath, sha256Hex, spanName } from "../src/strictPrivacy.js";
+import { hashedUserId, hmacSha256Hex, messageFingerprint, normalizeMessage, strictPath, sha256Hex, spanName } from "../src/strictPrivacy.js";
 // A byte-identical copy of sdks/strict_privacy_vectors.json, generated from the server's own
 // app/services/strict_privacy.rb: the results every SDK and the server have to agree on.
 import vectorsJson from "./fixtures/strict_privacy_vectors.json?raw";
@@ -14,6 +14,7 @@ interface Vectors {
   fingerprint: { message: string; normalized: string; fingerprint: string }[];
   span_name: { name: string; strict: string }[];
   path: { path: string; strict: string }[];
+  user_id: { id: string; key: string; hashed: string }[];
 }
 
 const vectors = JSON.parse(vectorsJson) as Vectors;
@@ -91,6 +92,27 @@ describe("strict privacy vectors", () => {
     );
     expect(sha256Hex(bytes("a".repeat(1000)))).toBe("41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
   });
+
+  it.each(vectors.user_id)("user_id vector %j", (vector) => {
+    expect(hashedUserId(vector.id, vector.key)).toBe(vector.hashed);
+  });
+
+  it("hashes an integer user id as its text", () => {
+    expect(hashedUserId(42, "customer-secret")).toBe("h1:316d4a35bc95112698f59ef5aac5c29a");
+  });
+
+  it("the self-contained HMAC-SHA256 matches RFC 4231's test cases, including a key over 64 bytes", () => {
+    const bytes = (text: string) => Array.from(text, (c) => c.charCodeAt(0));
+    expect(hmacSha256Hex(new Array<number>(20).fill(0x0b), bytes("Hi There"))).toBe(
+      "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+    );
+    expect(hmacSha256Hex(bytes("Jefe"), bytes("what do ya want for nothing?"))).toBe(
+      "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+    );
+    expect(hmacSha256Hex(new Array<number>(131).fill(0xaa), bytes("Test Using Larger Than Block-Size Key - Hash Key First"))).toBe(
+      "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+    );
+  });
 });
 
 function newConfiguration(): Configuration {
@@ -131,7 +153,7 @@ describe("EventBuilder#buildStrict", () => {
     expect(payload.sql_objects?.relations).toEqual(["patients"]);
     expect(payload.context).toEqual({ error_code: "E42" });
     expect("tags" in payload).toBe(false);
-    expect(payload.user).toEqual({ id: "7" });
+    expect("user" in payload).toBe(false);
     expect(payload.trace_id).toBe("a".repeat(32));
     expect(payload.backtrace.length).toBeGreaterThan(0);
     for (const frame of payload.backtrace) {
@@ -140,9 +162,32 @@ describe("EventBuilder#buildStrict", () => {
     expect(JSON.stringify(payload)).not.toMatch(/jane|flu|8821/);
   });
 
+  it("sends the user as only the keyed hash of its id when privacyUserKey is set", () => {
+    const config = newConfiguration();
+    config.strictPrivacy = true;
+    config.privacyUserKey = "customer-secret";
+
+    const payload = new EventBuilder(config).buildStrict(new Error("boom"), {}, { id: 7, email: "jane@example.com", username: "jane" });
+
+    expect(payload.user).toEqual({ id: hashedUserId("7", "customer-secret") });
+    expect(payload.user?.id).toMatch(/^h1:[0-9a-f]{32}$/);
+    expect(JSON.stringify(payload)).not.toMatch(/jane/);
+  });
+
+  it("sends no user with an empty privacyUserKey, or with a key and a blank id", () => {
+    const config = newConfiguration();
+    config.strictPrivacy = true;
+    config.privacyUserKey = "";
+    expect("user" in new EventBuilder(config).buildStrict(new Error("boom"), {}, { id: 7 })).toBe(false);
+
+    config.privacyUserKey = "customer-secret";
+    expect("user" in new EventBuilder(config).buildStrict(new Error("boom"), {}, { id: "  " })).toBe(false);
+  });
+
   it("leaves context, tags and user out when nothing is allowed or there's no id", () => {
     const config = newConfiguration();
     config.strictPrivacy = true;
+    config.privacyUserKey = "customer-secret";
 
     const payload = new EventBuilder(config).buildStrict(new Error("boom"), { error_code: "E42" }, { email: "jane@example.com" });
 
@@ -170,9 +215,30 @@ describe("captureException with strict privacy", () => {
     expect(requests[0]!.body).not.toMatch(/Jane/);
   });
 
+  it("sends the user as only the keyed hash of its id with privacyUserKey passed to init", async () => {
+    const requests = mockFetchCapturing();
+    initEnabled({ strictPrivacy: true, privacyUserKey: "customer-secret" });
+
+    forgeOpsTracker.captureException(new Error("boom"), {}, { id: 42, email: "jane@example.com" });
+
+    await waitUntil(() => requests.length === 1);
+    const event = JSON.parse(requests[0]!.body) as StrictEventPayload;
+    expect(event.user).toEqual({ id: "h1:316d4a35bc95112698f59ef5aac5c29a" });
+  });
+
+  it("sends no user with strict privacy on and no privacyUserKey", async () => {
+    const requests = mockFetchCapturing();
+    initEnabled({ strictPrivacy: true });
+
+    forgeOpsTracker.captureException(new Error("boom"), {}, { id: 42 });
+
+    await waitUntil(() => requests.length === 1);
+    expect("user" in (JSON.parse(requests[0]!.body) as StrictEventPayload)).toBe(false);
+  });
+
   it("with strict privacy off, events are exactly as before", async () => {
     const requests = mockFetchCapturing();
-    initEnabled({ privacyAllowedFields: ["error_code"] }); // ignored while strictPrivacy is off
+    initEnabled({ privacyAllowedFields: ["error_code"], privacyUserKey: "customer-secret" }); // ignored while strictPrivacy is off
 
     forgeOpsTracker.addBreadcrumb({ message: "clicked save" });
     forgeOpsTracker.captureException(new Error("boom 42"), { error_code: "E1", feature: "x" }, { id: 7, email: "a@b.co" });

@@ -169,13 +169,52 @@ export function allowedFields(fields: Record<string, unknown> | undefined, allow
   return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
-/** The user as its id only (a string), never email or username; undefined when there's no id. */
-export function userId(user: Record<string, unknown> | null | undefined): { id: string } | undefined {
+/**
+ * The user as only a keyed hash of its id (hashedUserId), never email, username or the raw id, and
+ * only when Configuration#privacyUserKey is set; undefined otherwise, or when there's no id. A raw
+ * id can be a record number that identifies a person, and an unkeyed hash of a small number can be
+ * guessed back.
+ */
+export function userId(user: Record<string, unknown> | null | undefined, key: string | null | undefined): { id: string } | undefined {
+  if (!key) {
+    return undefined;
+  }
   const id = user?.id;
   if (id === undefined || id === null || id === false || String(id).trim() === "") {
     return undefined;
   }
-  return { id: String(id) };
+  return { id: hashedUserId(id, key) };
+}
+
+/**
+ * "h1:" and the first 32 lowercase hex characters of HMAC-SHA256 of the id's UTF-8 text, keyed with
+ * the app's own secret, which ForgeOps never sees. The same id hashes the same under one key, so
+ * affected customers can still be counted.
+ */
+export function hashedUserId(id: unknown, key: string): string {
+  return `h1:${hmacSha256Hex(utf8Bytes(key), utf8Bytes(String(id))).slice(0, FINGERPRINT_LENGTH)}`;
+}
+
+/**
+ * HMAC-SHA256 (RFC 2104) on the self-contained sha256Hex below, since Hermes has no crypto:
+ * SHA256((K' xor opad) || SHA256((K' xor ipad) || message)), with K' the key (or its SHA-256, when
+ * longer than 64 bytes) padded with zeros to 64 bytes.
+ */
+export function hmacSha256Hex(key: readonly number[], message: readonly number[]): string {
+  const block = key.length > 64 ? hexBytes(sha256Hex(key)) : [...key];
+  while (block.length < 64) {
+    block.push(0);
+  }
+  const inner = hexBytes(sha256Hex([...block.map((byte) => byte ^ 0x36), ...message]));
+  return sha256Hex([...block.map((byte) => byte ^ 0x5c), ...inner]);
+}
+
+function hexBytes(hex: string): number[] {
+  const bytes: number[] = [];
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes.push(parseInt(hex.slice(i, i + 2), 16));
+  }
+  return bytes;
 }
 
 /** A span's data reduced to the masked statement and the database system. */
